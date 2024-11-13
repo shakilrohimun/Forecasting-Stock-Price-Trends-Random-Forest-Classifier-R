@@ -1,0 +1,334 @@
+---
+title: "Projet Apprentissage Statistiques M1MINT"
+author: "ROHIMUN SHAKIL"
+date: "2024-04-23"
+output: 
+  pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+
+L'objectif de ce projet est de prédire les mouvements du marché boursier, notamment de déterminer si le prix d'une action sera plus élevé ou plus bas le lendemain par rapport à aujourd'hui. Pour ce faire, nous utiliserons l'algorithme de machine learning appelé "Random Forest Classifier", en tenant compte de la problématique des classes déséquilibrées. Dans ce cadre, nous attribuerons la classe :
+
+  - +1 lorsque le prix de l'action augmente de manière significative entre les dates n et n+1
+  - -1 lorsque le prix diminue de manière significative
+  - 0 si le prix reste proche du prix précédent. 
+  
+L'objectif final à travers ce système est de créer un bot qui achète l'action lorsque la prédiction est dans la classe +1, vend à la baisse si elle est dans la classe -1, et reste inactif si la prédiction est dans la classe 0.
+
+```{r echo=FALSE, results='hide', warning=FALSE, include=FALSE}
+# Librairies
+
+# Pour avoir les données de bourse
+library(xts)
+library(zoo)
+library(lubridate)
+library(quantmod)
+library(tidyquant)
+
+# RandomForest
+library(randomForest)
+
+# Visualisation des données
+library(dplyr)
+library(caret)
+library(ggplot2)
+```
+
+# Obtention des données du marché
+
+Pour acquérir les données, nous utilisons le package quantmod, qui récupère les données quotidiennes du marché financier. Voici quelques exemples de données boursières couramment utilisées.
+```{r results='hide'}
+getSymbols("AAPL", warnings = FALSE, auto.assign = TRUE) # Apple
+getSymbols("MSFT", warnings = FALSE, auto.assign = TRUE) # Microsoft
+getSymbols("AMZN", warnings = FALSE, auto.assign = TRUE) # Amazone
+getSymbols("GOOG", warnings = FALSE, auto.assign = TRUE) # Google
+
+getSymbols("^GSPC", warnings = FALSE, auto.assign = TRUE) # SP500
+getSymbols("^FCHI", warnings = FALSE, auto.assign = TRUE) # CAC40
+```
+
+Dans notre étude, nous utiliserons uniquement les données du S&P 500, qui représentent la capitalisation boursière pondérée des 500 plus grandes entreprises des États-Unis. Il s'agit de l'un des indices les plus largement utilisés, souvent considéré comme un baromètre de la santé globale du marché boursier américain.
+
+```{r results='hide'}
+data <- GSPC
+data <- data[, 1:5]
+colnames(data) <- c("Open","High","Low","Close","Volume")
+head(data)
+```
+
+Ci-dessous, nous observons l'évolution du prix du S&P 500 au fil du temps.
+
+```{r echo=FALSE}
+chart_Series(data)
+```
+
+# Transformation des données
+
+```{r}
+data <- as.data.frame(data)
+epsilon_percent <- 0.01
+# Ajout Epsilon
+data <- data %>%
+  mutate( Epsilon = data$Close * epsilon_percent)
+# Ajout Tomorrow
+data <- data %>%
+  mutate(Tomorrow = lead(Close))
+# Ajout Target
+data <- data %>%
+  mutate(Target = case_when(
+    Tomorrow > Close + Epsilon ~ 1,
+    Tomorrow < Close - Epsilon ~ -1,
+    TRUE ~ 0
+  ))
+data$Target <- factor(data$Target)
+tail(data)
+```
+
+Après avoir préalablement nettoyé mes données, ajouté de nouveaux indicateurs et finalement transformé le tout en data frame, voici nos données :
+
+  - Index : La date
+  - Open : Le prix d'ouverture du jour
+  - High : Le prix le plus élevé enregistré au cours de la journée
+  - Low : Le prix le plus bas enregistré au cours de la journée
+  - Close : Le prix de clôture du jour
+  - Volume : La quantité d'actions échangées au cours de la journée
+  - Epsilon : Le prix de epsilon pour cent du close
+  - Tomorrow : Le prix de clôture du lendemain
+  - Target : Renvoie +1 si le prix de clôture du lendemain est supérieur au prix de clôture du jour plus epsilon, -1 si le prix de clôture du lendemain est inférieur au prix de clôture du jour moins epsilon, et 0 sinon
+
+Notre objectif est de prédire la valeur de Target pour le lendemain.
+
+# Visualisation du problème de classes
+
+```{r echo=FALSE}
+freq <- prop.table(table(data[,8])) * 100
+
+ggplot(data.frame(Valeur = factor(names(freq)), Fréquence = as.numeric(freq)), aes(x = Valeur, y = Fréquence)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(title = "Répartition des classes", x = "Valeur", y = "Fréquence (%)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Ci-dessus, il est clairement observé que la classe 0 est sur-représentée par rapport aux deux autres classes lorsque l'on choisit un epsilon assez grand.
+
+## Pourquoi et comment choisir ce epsilon
+
+En réalité, lorsqu'on investit sur les marchés financiers, il est nécessaire de passer par un intermédiaire, généralement une société de courtage en trading. À chaque passage d'ordre d'achat ou de vente, ces sociétés prélèvent un pourcentage appelé spread. Le choix de l'epsilon est crucial pour éviter de subir des pertes même si la prédiction était correcte. De plus, opter pour un epsilon élevé assure une plus grande sécurité, car lorsque epsilon tend vers l'infini, le bot n'ouvre aucune position, évitant ainsi toute perte d'argent, mais également toute possibilité de gain. Enfin, sur des indices boursiers tels que le S&P500, le CAC40 ou encore Apple, nous observons des marchés relativement stables, où les prix évoluent peu sur de courtes périodes de temps. Cette stabilité réduit l'aléa et nous permet d'obtenir de meilleures prédictions potentielles grâce à notre algorithme.
+
+# Problème théorique du Random Forest Classifier : Classification and Regression Trees (CART)
+
+Soit $p$ variables explicatives $X^1, ... , X^p$ (quantitatives ou qualitatives), une variable qualitative Y a expliquer et le $N$-echantillon :
+
+
+$(x_1,y_1), ... , (x_N,y_N),$ avec $x_i = (x^1_i ,..., x^p_1)$ pour tout $i \in [1,N]$.
+
+
+CART construit l'arbre récursivement de la façon suivante : à chaque étape, on choisit de diviser un nœud, et pour cela on détermine une valeur de j et une coupure optimale du domaine de $X^j$. Supposons qu’une coupure génère la partition $R_1,..,R_M$ et notons $c_m$ l’ajustement optimal (constant) de $Y$ dans chaque région $R_m$. Le vecteur $y = (y_1, . . . ,y_N )$ est alors ajuste par :
+
+
+$f(x) = \sum_{m=1}^{M} c_m \mathbb{1}_{R_m}(x),$ où la valeur optimale de $c_m$ est celle qui minimise la somme $S_M = \sum_i (y_i - f(x_i))^2$.
+
+
+Pour tout $m = 1, 2, . . . , M$, la meilleure estimation de $c_m$ est :
+
+$\hat{c}_m = \frac{1}{N_m} \sum_{x_i \in R_m} y_i$, avec $N_m = card(i | x_i \in R_m)$.
+
+Dans notre cas, $p=6$ et $N = 4354$ pour le S&P500.
+
+
+# Application du Random Forest Classifier
+
+```{r}
+set.seed(123)
+train_size <- 0.8
+train_index <- head(1:nrow(data), round(train_size * nrow(data)))
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+model <- randomForest(Target ~ .,
+                      data = train_data[, c("Open", "High", "Low", "Close", "Volume", "Target")])
+
+print(model)
+```
+
+```{r echo=FALSE}
+varImpPlot(model)
+```
+
+On peut faire un premier graphique qui illustre l'importance des variables explicatives dans la distinction des classes prédites. On constate que la seule variable explicative indépendante du temps est celle qui revêt le plus d'importance lors de la prise de décision de l'algorithme. En effet, le volume passé n'influe pas sur le volume futur. Ce dernier dépend principalement d'événements économiques ou sociologiques.
+
+# Caret : une méthode plus optimisée
+
+Une méthode plus efficace pour utiliser le modèle Random Forest consiste à utiliser le package Caret, car il propose des valeurs optimales pour les paramètres "ntree" et "mtry".
+
+```{r out.width='50%'}
+set.seed(123)
+model_caret <- train(Target ~ ., 
+                     data = train_data[, c("Open", "High", "Low", "Close", "Volume", "Target")], 
+                     method = "rf")
+print(model_caret)
+```
+
+Il est notable que le nombre optimal de variables à sélectionner aléatoirement à chaque division ("mtry") est de 2, comme indiqué dans le graphique suivant :
+
+```{r echo=FALSE}
+plot(model_caret)
+```
+
+# Explication du calcul de la précision
+
+Dans notre cas, nous nous concentrons particulièrement sur les faux positifs, qui se produisent lorsque l'algorithme prédit incorrectement une action d'achat ou de vente. Ainsi, pour évaluer la performance du modèle, nous utilisons l'indicateur FPR (False Positive Rate), calculé selon la formule suivante :
+
+$FRP = \frac{Faux Positifs}{Faux Positifs + Vrais Negatifs}$. 
+
+L'objectif est de minimiser les faux positifs, car ils représentent des prédictions incorrectes qui pourraient entraîner des pertes financières, on obtient donc la formule suivante : 
+
+$FRP_{Totale} = \frac{FP_{classe = -1} + FP_{classe = 0} + FP_{classe = 1}}{Total_{observation}}$.
+
+```{r}
+conf_matrix <- model$confusion
+
+FPm1 <- conf_matrix["-1", "0"] + conf_matrix["-1", "1"]
+FP0 <- conf_matrix["0", "-1"] + conf_matrix["0", "1"]
+FP1 <- conf_matrix["1", "-1"] + conf_matrix["1", "0"]
+Total_obs <- conf_matrix["-1", "-1"] + conf_matrix["-1", "0"] + conf_matrix["-1", "1"] +
+  conf_matrix["0", "-1"] + conf_matrix["0", "0"] + conf_matrix["0", "1"] +
+  conf_matrix["1", "-1"] + conf_matrix["1", "0"] + conf_matrix["1", "1"]
+  
+
+FRP <- (FPm1 + FP0 + FP1)/Total_obs
+FRP
+```
+
+On retrouve le résultat de l'erreur OOB du Random Forest.
+
+# Visualisation des résultats
+
+```{r echo=FALSE}
+predictions <- predict(model, newdata = test_data)
+predictions_df <- data.frame(predictions = predictions)
+debut <- round(train_size * nrow(data)) + 1
+
+df <- data.frame(temps = 1:nrow(data), choix = cumsum(as.numeric(data$Target) - 2), choix_pred = cumsum(as.numeric(data$Target) - 2), choix_pred_w = cumsum(as.numeric(data$Target) - 2))
+
+cumsum_values <- cumsum(as.numeric(predictions_df$predictions) - 2)
+df$choix_pred[debut:nrow(df)] <- cumsum_values[1:(nrow(df) - debut + 1)]
+
+
+ggplot(df, aes(x = temps, y = choix)) +
+  geom_line() +
+  labs(title = "Graphique des décision au cours du temps", x = "Décision", y = "Valeurs des décision cumulé") +
+  theme_minimal()+
+  geom_line(aes(x = temps, y = choix_pred), color = "red") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+On remarque que la prédiction renvoie très majoritairement la classe -1. Afin de résoudre ce problème, nous tentons de rééquilibrer les classes pour obtenir un résultat plus équilibré.
+
+# Équilibrer les classes ?
+
+```{r echo=FALSE,out.width='70%'}
+set.seed(123)
+
+classe_m1<-as.numeric(table(data[,8])["-1"])
+classe_0<-as.numeric(table(data[,8])["0"])
+classe_p1<-as.numeric(table(data[,8])["1"])
+
+total<-classe_m1 + classe_0 + classe_p1
+
+ratio_m1<- total / classe_m1
+ratio_0<- total / classe_0
+ratio_p1<- total / classe_p1
+
+class_weights <- c("-1" = ratio_m1, "0" = ratio_0, "1" = ratio_p1)
+
+train_size <- 0.8
+train_index <- head(1:nrow(data), round(train_size * nrow(data)))
+train_data_w <- data[train_index, ]
+test_data_w <- data[-train_index, ]
+
+model_weighted <- randomForest(Target ~ .,
+                      data = train_data_w[, c("Open", "High", "Low", "Close", "Volume", "Target")],
+                      ntry = 2,
+                      classwt = class_weights)
+
+print(model_weighted)
+```
+```{r echo=FALSE}
+predictions_w <- predict(model_weighted, newdata = test_data_w)
+predictions_df <- data.frame(predictions_w = predictions_w)
+debut <- round(train_size * nrow(data)) + 1
+
+cumsum_values_w <- cumsum(as.numeric(predictions_df$predictions_w) - 2)
+df$choix_pred_w[debut:nrow(df)] <- cumsum_values_w[1:(nrow(df) - debut + 1)]
+
+
+ggplot(df, aes(x = temps, y = choix)) +
+  geom_line() +
+  labs(title = "Graphique des décision au cours du temps", x = "Décision", y = "Valeurs des décision cumulé") +
+  theme_minimal()+
+  geom_line(aes(x = temps, y = choix_pred), color = "red") +
+  geom_line(aes(x = temps, y = choix_pred_w), color = "blue")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+On remarque qu'il y a légèrement moins d'erreur mais ce n'est pas assez significatif pour être pris en compte.
+
+# Les solutions envisageables
+
+On pourrait corréler nos données avec le temps en créant une nouvelle colonne tendance comme ceci :
+
+```{r echo=FALSE,out.width='70%'}
+data$Trend <- as.numeric(data$Target[1])-2
+
+for (i in 2:nrow(data)) {
+  if (data$Target[i] == data$Target[i-1]) {
+    if (as.numeric(data$Target[i]) == 1) {
+      data$Trend[i] <- data$Trend[i-1] - 1
+    } else if (as.numeric(data$Target[i]) == 2) {
+      data$Trend[i] <- 0
+    } else {
+      data$Trend[i] <- data$Trend[i-1] + 1
+    }
+  }
+  else {
+    data$Trend[i] <- as.numeric(data$Target[i]) - 2
+  }
+}
+data[463:472, ]
+```
+
+```{r echo=FALSE}
+set.seed(123)
+train_size <- 0.8
+train_index <- head(1:nrow(data), round(train_size * nrow(data)))
+train_data_add <- data[train_index, ]
+test_data_add <- data[-train_index, ]
+
+model_add <- randomForest(Target ~ .,
+                      data = train_data_add[, c("Open", "High", "Low", "Close", "Volume", "Target","Trend")],
+                      ntry = 2)
+
+varImpPlot(model_add)
+```
+
+# Conclusion
+
+La méthode de Random Forest, bien qu'amplement utilisée en ligne pour prédire les prix des actions, s'avère finalement peu adaptée à notre contexte. Une des raisons principales réside dans le fonctionnement du classifieur Random Forest, où l'algorithme mélange de manière aléatoire les données, altérant ainsi la temporalité inhérente à notre jeu de données. Dans le cas de données temporelles, ce mélange entraîne un biais dans les prédictions. De plus, l'algorithme a tendance à souffrir de surapprentissage, produisant théoriquement des prédictions presque parfaites, mais inefficaces dans la pratique.
+
+Pour pallier ces problèmes, des solutions plus efficaces pour utiliser le Random Forest impliquent l'intégration de nouvelles données temporelles, telles que la variable "Trend", qui agit comme une moyenne mobile. Cette variable joue un rôle crucial dans les prédictions de l'algorithme, expliquant ainsi son importance croissante dans le processus. En intégrant ces aspects temporels de manière plus appropriée et en optimisant le paramètre epsilon, il est possible d'améliorer la performance prédictive et la pertinence des résultats obtenus.
+
+Après des recherches approfondies en ligne, il apparaît que dans le monde professionnel, la prédiction des prix via l'apprentissage automatique repose sur l'utilisation d'un mélange d'algorithmes, notamment une combinaison bien connue : Random Forest et Gradient Boosting. De plus, la version de Random Forest utilisée est ajustée pour minimiser le mélange aléatoire pendant l'exécution de l'algorithme, ce qui conduit à des résultats améliorés sans risque de surapprentissage.
+
+# Références 
+
+  - https://cran.r-project.org/web/packages/quantmod/quantmod.pdf
+  - http://mehdikhaneboubi.free.fr/random_forest_r.html#creation-de-la-base-de-travail
+  - machine learning for algorithmic trading stefan jansen
+  - cours Université Paris-Dauphine : Arbre de décision, Patrice Bertrand
+
